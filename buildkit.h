@@ -22,7 +22,12 @@
 #define OS_PATH_MAX MAX_PATH
 
 #else
-
+    #include <dirent.h>
+    #include <fcntl.h>
+    #include <unistd.h>
+    #include <sys/wait.h>
+    #include <sys/stat.h>
+    #include <errno.h>
 #ifdef PATH_MAX
     #define OS_PATH_MAX PATH_MAX
 #else
@@ -67,8 +72,7 @@ struct DirEntry
 };
 
 typedef struct String String;
-struct String
-{
+struct String {
     char *data;
     size_t length;
 };
@@ -132,7 +136,7 @@ struct BuildRule
     const char *output_ext;
 };
 
-inline BuildRule build_rule(const char *command, const char *output_ext)
+static inline BuildRule build_rule(const char *command, const char *output_ext)
 {
     BuildRule result;
     result.command = command;
@@ -219,32 +223,32 @@ int os_read_file(OSFile file, size_t offset, size_t size, void *buffer);
 
 size_t os_get_file_size(OSFile file);
 
-inline int is_whitespace(char c)
+static inline int is_whitespace(char c)
 {
     return (c == ' ' || (c >= '\t' && c <= '\r'));
 }
 
-inline int is_eol(char c) 
+static inline int is_eol(char c) 
 {
     return (c == '\r' || c == '\n');
 }
 
-inline int is_char(char c)
+static inline int is_char(char c)
 {
     return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_' || c == '$';
 }
 
-inline int is_alpha(char c)
+static inline int is_alpha(char c)
 {
     return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
 }
 
-inline int is_number(char c)
+static inline int is_number(char c)
 {
     return (c >= '0' && c <= '9');
 }
 
-inline int is_alphanumeric(char c) 
+static inline int is_alphanumeric(char c) 
 {
     return is_alpha(c) || is_number(c);
 }
@@ -421,7 +425,8 @@ struct DirIterator
     int first_found;
     char conversion_buffer[OS_PATH_MAX * 3]; /* conversion to utf8 */
 #else
-
+    DIR *handle;
+    struct dirent *entry;
 #endif
     DirEntry current;
 };
@@ -467,7 +472,13 @@ DirIterator *dir_iter_begin(const char *dir)
 
     return iter;
 #else
-    #error unimplemented
+    DIR *handle = opendir(dir);
+    if (!handle)
+	return NULL;
+    DirIterator *iter = (DirIterator *)BK_ALLOC(sizeof(DirIterator));
+    memset(iter, 0, sizeof(DirIterator));
+    iter->handle = handle;
+    return iter;
 #endif
 }
 
@@ -490,7 +501,16 @@ DirEntry *dir_iter_next(DirIterator *iter)
 
     return NULL;
 #else
-
+    struct dirent *entry = readdir(iter->handle);
+    if (entry)
+    {
+	iter->current.name = entry->d_name;
+	struct stat st;
+	stat(entry->d_name, &st);
+	iter->current.is_dir = (st.st_mode & S_IFDIR) != 0;
+	return &iter->current;
+    }
+    return NULL;
 #endif
 }
 
@@ -500,7 +520,8 @@ void dir_iter_end(DirIterator *iter)
     FindClose(iter->handle);
     BK_FREE(iter);
 #else
-
+    closedir(iter->handle);
+    BK_FREE(iter);
 #endif
 }
 
@@ -546,7 +567,15 @@ int os_file_stat(const char *path, OSFileStat *out_stat)
     }
     return 0;
 #else
-    #error unimplemented
+    struct stat st;
+    if (!stat(path, &st))
+    {
+	out_stat->file_size = st.st_size;
+	out_stat->last_write_time = st.st_mtime;
+	out_stat->last_access_time = st.st_atime;
+	return 1;
+    }
+    return 0;
 #endif
 }
 
@@ -588,7 +617,25 @@ int os_open_file(const char *path, OSFile *out_file, int flags)
     out_file->handle = (uintptr_t)hfile;
     return 1;
 #else
-    #error unimplemented
+    int opt = 0;
+    if (flags & OS_FILE_ACCESS_READ && flags & OS_FILE_ACCESS_WRITE)
+        opt |= O_RDWR;
+    else if (flags & OS_FILE_ACCESS_READ)
+	opt |= O_RDONLY;
+    else if (flags & OS_FILE_ACCESS_WRITE)
+	opt |= O_WRONLY;
+
+    if (flags & OS_FILE_CREATE_IF_NOT_EXIST)
+	opt |= O_CREAT;
+
+    if (flags & OS_FILE_TRUNCATE)
+	opt |= O_TRUNC;
+	
+    int fd = open(path, opt);
+    if (fd < 0)
+	return 0;
+    out_file->handle = (uintptr_t)fd;
+    return 1;
 #endif
 }
 
@@ -597,7 +644,7 @@ void os_close_file(OSFile file)
 #ifdef HOST_WINDOWS
     CloseHandle((HANDLE)file.handle);
 #else
-    #error unimplemented
+    close((int)file.handle);
 #endif
 }
 
@@ -608,7 +655,10 @@ size_t os_get_file_size(OSFile file)
     GetFileSizeEx((HANDLE)file.handle, &li);
     return li.QuadPart;
 #else
-    #error unimplemented
+    struct stat st;
+    if (!fstat((int)file.handle, &st))
+        return st.st_size;
+    return 0;
 #endif
 }
 
@@ -619,7 +669,7 @@ int os_write_file(OSFile file, void *buffer, size_t size)
     DWORD bytes_written = 0;
     return WriteFile(hfile, buffer, size, &bytes_written, NULL);
 #else
-    #error unimplemented
+    return write((int)file.handle, buffer, size);
 #endif
 }
 
@@ -634,7 +684,10 @@ TimeStamp os_get_file_write_time(OSFile file)
     TimeStamp result = li.QuadPart;
     return result;
 #else
-    #error unimplemented
+    struct stat st;
+    if (!fstat((int)file.handle, &st))
+	return st.st_mtime;
+    return 0;
 #endif
 }
 
@@ -657,7 +710,13 @@ int os_create_directory(const char *dir)
     }
     return 1;
 #else
-    #error unimplemented
+    mode_t mode = S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH;
+    if (!mkdir(dir, mode))
+	return 1;
+    else if (errno == EEXIST)
+	return 0;
+    else
+	return -1;
 #endif
 }
 
@@ -684,7 +743,8 @@ exit_free:
     arena_pop_to(arena, pos);
     return 0;
 #else
-    #error unimplemented
+    #warning unimplemented call os_normalize_path
+    return 0;
 #endif
 }
 
@@ -699,7 +759,10 @@ int os_path_exists(const char *path)
     DWORD attr = GetFileAttributesW(wide_path);
     return (attr != INVALID_FILE_ATTRIBUTES);
 #else
-    #error unimplemented
+    struct stat st;
+    if (!stat(path, &st))
+	return 1;
+    return 0;
 #endif
 }
 
@@ -710,7 +773,8 @@ int os_get_thread_count(void)
     GetSystemInfo(&sysinfo);
     return sysinfo.dwNumberOfProcessors;
 #else
-    #error unimplemented
+    #warning unimplemented call os_get_thread_count
+    return 0;
 #endif
 }
 
@@ -749,7 +813,7 @@ static inline const char *get_path_separator(void)
 #endif
 }
 
-inline int is_valid_file_char(char c)
+static inline int is_valid_file_char(char c)
 {
     return (c >= ' ' && c <= '~') && !(is_path_separator(c) || c == '"' || c == '*' || c == ':' || c == '<' || c == '>' || c == '?' || c == '|');
 }
@@ -790,7 +854,7 @@ struct PathSegment
     int flags;
 };
 
-inline RangeInt irange(int start, int length)
+static inline RangeInt irange(int start, int length)
 {
     RangeInt result;
     result.start = start;
@@ -1300,6 +1364,7 @@ static inline int string_grow(StringBuilder *sb, size_t amount)
 
 int string_append_len(StringBuilder *sb, const char *str, size_t len)
 {
+    BK_ASSERT(str);
     if (!string_grow(sb, len))
         return 0;
     memcpy(sb->data + sb->len, str, len);
@@ -1310,8 +1375,12 @@ int string_append_len(StringBuilder *sb, const char *str, size_t len)
 
 int string_append(StringBuilder *sb, const char *str)
 {
-    size_t len = strlen(str);
-    return string_append_len(sb, str, len);
+    if (str)
+    {
+        size_t len = strlen(str);
+        return string_append_len(sb, str, len);
+    }
+    return 0;
 }
 
 int string_append_char(StringBuilder *sb, char c)
@@ -1324,7 +1393,7 @@ int string_append_char(StringBuilder *sb, char c)
     return 1;
 }
 
-inline int string_concat(StringBuilder *sb, String str)
+static inline int string_concat(StringBuilder *sb, String str)
 {
     return string_append_len(sb, str.data, str.length);
 }
@@ -1412,7 +1481,7 @@ void T##_vec_free(T##Vec *vec) \
     vec->capacity = 0; \
 } \
 \
-inline int T##_vec_maybe_grow(T##Vec *vec) \
+static inline int T##_vec_maybe_grow(T##Vec *vec) \
 { \
     if (vec->length == vec->capacity) \
     { \
@@ -1424,7 +1493,7 @@ inline int T##_vec_maybe_grow(T##Vec *vec) \
     return 1; \
 } \
 \
-inline int T##_vec_push(T##Vec *vec, T value) \
+static inline int T##_vec_push(T##Vec *vec, T value) \
 { \
     if (!T##_vec_maybe_grow(vec)) \
         return 0; \
@@ -1432,7 +1501,7 @@ inline int T##_vec_push(T##Vec *vec, T value) \
     return 1; \
 } \
 \
-inline int T##_vec_emplace(T##Vec *vec) \
+static inline int T##_vec_emplace(T##Vec *vec) \
 { \
     if (!T##_vec_maybe_grow(vec)) \
         return -1; \
@@ -1488,7 +1557,7 @@ struct PP_Parser
     int error;
 };
 
-inline uint32_t fnv1a(char *data, size_t length)
+static inline uint32_t fnv1a(char *data, size_t length)
 {
     uint32_t hash = 0x811c9dc5;
     while (length--)
@@ -1516,7 +1585,7 @@ static size_t pp_parse_until(PP_Parser *parser, char c)
     return 0;
 }
 
-inline char *parse_line_comment(char *at)
+static inline char *parse_line_comment(char *at)
 {
     ++at;
     while (*at && !is_eol(*at)) {
@@ -1525,7 +1594,7 @@ inline char *parse_line_comment(char *at)
     return at;
 }
 
-inline char *parse_block_comment(char *at) 
+static inline char *parse_block_comment(char *at) 
 {
     ++at;
     while (*at)
@@ -2618,15 +2687,16 @@ int build_target(const char *name, StringArray *sources, BuildOptions *opt)
     info.total_entry_sizes = total_entry_sizes;
     info.targets = &target_files;
     serialize_cache_file(arena, graph, cache_path.data, &info);
-
+#if 1 
     // TODO: join threads and link
     int relink = 0;
     string_trunc(&buf, 0);
-    string_append(&buf, opt->output_dir);
-    string_append(&buf, sep);
+    if (string_append(&buf, opt->output_dir))
+        string_append(&buf, sep);
     string_append(&buf, name);
     string_append(&buf, opt->output_rule.output_ext);
     String output_file = string_from_builder(&buf);
+    printf("%s\n", output_file.data);
     if (!graph->visit_index)
     {
         OSFileStat output_stat;
@@ -2636,6 +2706,7 @@ int build_target(const char *name, StringArray *sources, BuildOptions *opt)
             {
                 if (target_filetimes[i] > output_stat.last_write_time)
                 {
+                    printf("outdated?\n");
                     relink = 1;
                     break;
                 }
@@ -2643,20 +2714,22 @@ int build_target(const char *name, StringArray *sources, BuildOptions *opt)
         }
         else
         {
+            printf("Can't stat\n");
             relink = 1;
         }
     }
     else
     {
+        printf("Someone was recompiled\n");
         relink = 1;
     }
-    
+
     if (relink)
     {
         CommandTokenList out_cmd = tokenize_build_command(arena, opt->output_rule.command);
         run_build_rule(commands, string_list_join(arena, &target_files, ' '), output_file, &out_cmd);
     }
-
+#endif
     result = 1;
 
 exit_free:
@@ -2665,7 +2738,6 @@ exit_free:
     FileNode_vec_free(&files);
     BK_FREE(file_table);
     arena_free(arena);
-
     return result;
 }
 
@@ -2789,7 +2861,34 @@ int os_run_cmd(char *command, OSFile *file_out, OSFile *file_in)
 
     return ec;
 #else
-    return system(command);
+    pid_t pid;
+    switch (pid = fork())
+    {
+    case -1:
+        return -1;
+    case 0:
+        execl("/bin/sh", "sh", "-c", command, NULL);
+        exit(-1);
+    default:
+        break;
+    }
+#if 0
+    if (file_out)
+    {
+        dup2((int)file_out.handle, STDOUT_FILENO);
+    }
+    if (file_in)
+    {
+        dup2((int)file_in.handle, STDIN_FILENO);
+    }
+#endif
+    int status;
+    waitpid(pid, &status, 0);
+    if (WIFEXITED(status))
+    {
+        return WEXITSTATUS(status);
+    }
+    return -1; 
 #endif
 }
 
@@ -2806,7 +2905,8 @@ int os_create_pipe(OSFile *out_read, OSFile *out_write)
         return 0;
     }
 #else
-    #error
+    #warning unimplemented call os_create_pipe
+    return 0;
 #endif
     return 1;
 }
@@ -2839,7 +2939,10 @@ int os_read_file(OSFile file, size_t offset, size_t size, void *buffer)
     
     return 0;
 #else
-
+    size_t bytes_read = pread((int)file.handle, buffer, size, offset);
+    if (bytes_read == size)
+        return 1;
+	return 0;	
 #endif
 }
 
