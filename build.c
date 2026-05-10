@@ -9,10 +9,11 @@ int main(void)
     clock_t begin = clock();
     StringArray *sources = string_array_alloc(100, 32768);
     add_files(sources, "src/*.c");
-    BuildRule cc_rule = build_rule("clang -c -O0 -g {in} -o {out}", ".o");
+    BuildRule cc_rule = build_rule("clang -c -O0 -g -I./include {in} -o {out}", ".o");
     BuildRule out_rule = build_rule("clang {in} -o {out}", ".exe");
     BuildOptions opt = {0};
     StringArray *include_paths = string_array_alloc(10, 1024);
+    string_array_push(include_paths, "include");
     opt.include_paths = include_paths;
     opt.cc_rule = cc_rule;
     opt.output_rule = out_rule;

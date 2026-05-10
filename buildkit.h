@@ -725,6 +725,25 @@ int os_create_directory(const char *dir)
 #endif
 }
 
+int os_get_current_directory(char *buffer, size_t len)
+{
+#ifdef HOST_WINDOWS
+    WCHAR widecwd[OS_PATH_MAX];
+    DWORD size = GetCurrentDirectoryW(OS_PATH_MAX, widecwd);
+    if (size > OS_PATH_MAX)
+        return 0;
+    int length = WideCharToMultiByte(CP_UTF8, 0, widecwd, size + 1, NULL, 0, NULL, NULL);
+    if (length + 1 > len)
+        return 0;
+    WideCharToMultiByte(CP_UTF8, 0, widecwd, size + 1, buffer, length + 1, NULL, NULL);
+    strreplace(buffer, len, "\\", "/");
+    return 1;
+#else
+    char *result = getcwd(buffer, len);
+    return (result != NULL);
+#endif
+}
+
 size_t os_normalize_path(Arena *arena, const char *path, int path_len, char *buffer, size_t size)
 {
 #ifdef HOST_WINDOWS
@@ -2550,9 +2569,9 @@ int serialize_cache_file(Arena *arena, FileGraph *graph, const char *path, Cache
 int build_target(const char *name, StringArray *sources, BuildOptions *opt)
 {
     int result = 0;
-    char target_path[OS_PATH_MAX];
+    char path_buffer[OS_PATH_MAX];
     StringBuilder buf;
-    string_alloc(&buf, OS_PATH_MAX, target_path);
+    string_alloc(&buf, OS_PATH_MAX, path_buffer);
 
     int thread_count = 1;//lesser_int(os_get_thread_count(), sources->count);
 
@@ -2732,10 +2751,9 @@ int build_target(const char *name, StringArray *sources, BuildOptions *opt)
 
     if (opt->generate_compile_commands)
     {
-        OSFileStat stat;
-        const char *commands_file = "compile_commands.json";
-        if (!os_file_stat(commands_file, &stat) || graph->visit_index)
+        if (os_get_current_directory(path_buffer, OS_PATH_MAX))
         {
+            const char *commands_file = "compile_commands.json";
             // TODO: arena allocate
             StringBuilder json;
             string_alloc(&json, 0, NULL);
@@ -2743,7 +2761,9 @@ int build_target(const char *name, StringArray *sources, BuildOptions *opt)
             StringNode *target = target_files.head;
             for (int i = 0; i < sources->count; ++i)
             {
-                string_append(&json, "  {\n    \"directory\": \".\",\n");
+                string_append(&json, "  {\n    \"directory\": \"");
+                string_append(&json, path_buffer);
+                string_append(&json, "\",\n");
                 string_append(&json, "    \"command\": ");
                 string_append(&json, "\"");
                 push_command_string(&json, &cc_cmd, sources->v[i], target->str);
@@ -2762,6 +2782,10 @@ int build_target(const char *name, StringArray *sources, BuildOptions *opt)
             os_write_file(json_file, json.data, json.len);
             os_close_file(json_file);
             string_free(&json);
+        }
+        else
+        {
+            printf("Failed to get the current directory.\n");
         }
     }
 
