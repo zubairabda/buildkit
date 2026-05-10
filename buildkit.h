@@ -978,310 +978,6 @@ String string_list_join(Arena *arena, StringList *list, char sep)
     return result;
 }
 
-static inline void glob_push_segment(char *current, const char *dir, size_t dir_len)
-{
-    size_t len = strlen(current);
-    if (!len)
-    {
-        strncat(current, dir, dir_len);
-    }
-    else
-    {
-        //char *end = &current[len - 1];
-        //if (is_path_separator(*end))
-        strcat(current, get_path_separator());
-        strncat(current, dir, dir_len);
-    }
-}
-
-static inline void glob_pop_segment(char *current)
-{
-    size_t len = strlen(current);
-    while (len--)
-    {
-        char c = current[len];
-        if (is_path_separator(c))
-        {
-            current[len] = '\0';
-            break;
-        }
-    }
-}
-
-typedef struct GlobData GlobData;
-struct GlobData
-{
-    StringArray *list;
-    PathToken *tokens;
-    const char *pattern;
-    PathSegment *segments;
-    int segment_count;
-};
-
-static int glob_match_pattern(GlobData *data, RangeInt tokens, const char *input)
-{
-    const char *pattern = data->pattern;
-    size_t len = strlen(input);
-    int index = 0;
-    PathTokenType prev_token_type = TOKEN_LITERAL;
-    while (tokens.start < tokens.end)
-    {
-        PathToken *token = &data->tokens[tokens.start++];
-        switch (token->type)
-        {
-        case TOKEN_LITERAL:
-        {
-            const char *at = &pattern[token->str.pos];
-            const char *src = &input[index];
-            if (prev_token_type == TOKEN_WILDCARD)
-            {
-                int match = 0;
-                size_t t = 0;
-                while (index < len)
-                {
-                    char a = input[index++];
-                    if (a == '\0')
-                        break;
-                    char b = pattern[token->str.pos + t];
-
-                    if (a != b)
-                    {
-                        t = 0;
-                        continue;
-                    }
-
-                    ++t;
-
-                    if (t == token->str.length)
-                    {
-                        match = 1;
-                        break;
-                    }
-                }
-
-                if (!match)
-                    return 0;
-            }
-            else
-            {
-                if (strncmp(&input[index], at, token->str.length) != 0)
-                {
-                    return 0;
-                }
-                index += token->str.length;
-            }
-            break;
-        }
-        case TOKEN_WILDCARD:
-        {
-
-            break;
-        }
-        }
-
-        //last_token_type = token->type;
-        prev_token_type = token->type;
-        //++token_index;
-    }
-    
-    // ensure suffixes are matched correctly
-    if ((prev_token_type == TOKEN_LITERAL) && (index < len))
-        return 0;
-
-    return 1;
-}
-
-static void glob_recurse(GlobData *data, char *dir, int segment_index, int token_index)
-{
-    int directory_count = 0; /* number of literal path segments traversed, so that they can be popped in order */
-    while (segment_index < data->segment_count)
-    {
-        PathSegment *segment = &data->segments[segment_index];
-        int is_directory = segment_index < (data->segment_count - 1);
-        if (segment->flags & SEGMENT_WILDCARD)
-        {
-            int dir_filter = is_directory || segment->flags & SEGMENT_DIRECTORY;
-            DirEntry *entry;
-            DirIterator *iter = dir_iter_begin(dir);
-            if (!iter)
-                break;
-
-            while ((entry = dir_iter_next(iter)) != NULL)
-            {
-                if (dir_filter && !entry->is_dir)
-                    continue;
-
-                const char *name = entry->name;
-                if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
-                    continue;
-                
-                if (glob_match_pattern(data, irange(token_index, segment->token_count), name))
-                {
-                    if (is_directory)
-                    {
-                        if (entry->is_dir)
-                        {
-                            glob_push_segment(dir, name, strlen(name));
-                            glob_recurse(data, dir, segment_index + 1, token_index + segment->token_count);
-                            glob_pop_segment(dir);
-                        }
-                    }
-                    else
-                    {
-                        // match?
-                        //printf("%s\n", name);
-                        glob_push_segment(dir, name, strlen(name));
-                        string_array_push_len(data->list, dir, strlen(dir));
-                        glob_pop_segment(dir);
-                    }
-                }
-            }
-            dir_iter_end(iter);
-            break;
-        }
-        else
-        {
-            PathToken *token = &data->tokens[token_index];
-            if (is_directory)
-            {
-                glob_push_segment(dir, &data->pattern[token->str.pos], token->str.length);
-                ++directory_count;
-            }
-            else
-            {
-                // match?
-                //printf("%.*s\n", (int)token->str.length, &data->pattern[token->str.pos]);
-                glob_push_segment(dir, &data->pattern[token->str.pos], token->str.length);
-                string_array_push_len(data->list, dir, strlen(dir));
-                glob_pop_segment(dir);
-            }
-        }
-
-        //glob_pop_directory(dir);
-        token_index += segment->token_count;
-        ++segment_index;
-    }
-
-    for (int i = 0; i < directory_count; ++i)
-        glob_pop_segment(dir);
-}
-
-static int glob_sources(GlobData *data)
-{
-    char current_dir[OS_PATH_MAX];
-    current_dir[0] = '\0';
-
-    if (!is_path_absolute(data->pattern, strlen(data->pattern)))
-    {
-        if (data->segments[0].flags & SEGMENT_WILDCARD)
-            strcat(current_dir, ".");
-    }
-
-    glob_recurse(data, current_dir, 0, 0);
-
-    return 0;
-}
-
-static inline void set_path_token(PathTokenType type, size_t start, size_t length, PathToken *out_token)
-{
-    out_token->type = type;
-    out_token->str.pos = start;
-    out_token->str.length = length;
-}
-
-int add_files(StringArray *list, const char *pattern)
-{
-    size_t len = strlen(pattern);
-    if (!len)
-        return 0;
-
-    PathSegment segments[MAX_PATH_SEGMENTS];
-    memset(segments, 0, sizeof(segments));
-    PathToken *token_buffer = (PathToken *)BK_ALLOC(sizeof(PathToken) * MAX_PATH_TOKENS);
-    int token_count = 0;
-
-    //int starting_index = is_absolute_path(pattern, len);
-    int result = 0;
-    int has_wildcard = 0; /* only call 'glob_sources' if there is at least one segment with a wildcard */
-    int segment_count = 1;
-    size_t at = 0;
-    int segment_index = 0;
-    while (pattern[at] != '\0')
-    {
-        char c = pattern[at];
-        if (is_path_separator(c))
-        {
-            /* NOTE: this is here for now to account for POSIX path names that start with a '/' separator */
-            /* since we ignore the first '/' */
-            if (segments[segment_index].token_count > 0)
-            {
-                ++segment_count;
-                ++segment_index;
-                BK_ASSERT(segment_count < MAX_PATH_SEGMENTS);
-            }
-
-            ++at;
-            //size_t start = at++;
-            while (is_path_separator(pattern[at]))
-                ++at;
-            //add_token(TOKEN_PATH_SEPARATOR, start, at - start, ++segment);
-        }
-        else if (c == '*')
-        {
-            has_wildcard = 1;
-            segments[segment_index].flags |= SEGMENT_WILDCARD;
-            set_path_token(TOKEN_WILDCARD, at++, 1, &token_buffer[token_count++]);
-            ++segments[segment_index].token_count;
-        }
-        else if (is_valid_file_char(c))
-        {
-            size_t start = at;
-            while (is_valid_file_char(pattern[at]))
-                ++at;
-            set_path_token(TOKEN_LITERAL, start, at - start, &token_buffer[token_count++]);
-            ++segments[segment_index].token_count;
-        }
-        else
-        {
-            goto exit_free;
-        }
-    }
-
-    if (!segments[segment_index].token_count)
-    {
-        segments[segment_index].flags |= SEGMENT_DIRECTORY;
-    }
-
-    BK_ASSERT(token_count <= MAX_PATH_TOKENS);
-
-    if (!has_wildcard)
-    {
-        // path is literal, copy string directly
-        // TODO: should go through each token, to fix/normalize any extra chars
-        if (string_array_push_len(list, pattern, len))
-        {
-#ifdef HOST_WINDOWS
-            String str = list->v[list->count - 1];
-            strreplace(str.data, str.length, "/", "\\");
-#endif
-        }
-    }
-    else
-    {
-        GlobData data;
-        data.list = list;
-        data.tokens = token_buffer;
-        data.pattern = pattern;
-        data.segments = segments;
-        data.segment_count = segment_count;
-        result = glob_sources(&data);
-    }
-exit_free:
-    BK_FREE(token_buffer);
-
-    return result;
-}
-
 enum
 {
     STRING_BUILDER_NO_REALLOC = 0x1
@@ -1460,6 +1156,295 @@ String concat_cstr(Arena *arena, const char *a, const char *b)
     String result;
     result.data = data;
     result.length = size;
+    return result;
+}
+
+static inline void glob_push_segment(StringBuilder *current, const char *dir, size_t dir_len)
+{
+    size_t len = current->len;
+    if (!len)
+    {
+        string_append_len(current, dir, dir_len);
+    }
+    else
+    {
+        //char *end = &current[len - 1];
+        //if (is_path_separator(*end))
+        string_append_char(current, '/');
+        string_append_len(current, dir, dir_len);
+    }
+}
+
+static inline void glob_pop_segment(StringBuilder *current)
+{
+    size_t len = current->len;
+    while (len--)
+    {
+        char c = current->data[len];
+        if (is_path_separator(c))
+        {
+            string_trunc(current, len);
+            //current[len] = '\0';
+            break;
+        }
+    }
+}
+
+typedef struct GlobData GlobData;
+struct GlobData
+{
+    StringArray *list;
+    PathToken *tokens;
+    const char *pattern;
+    PathSegment *segments;
+    int segment_count;
+};
+
+static int glob_match_pattern(GlobData *data, RangeInt tokens, const char *input)
+{
+    const char *pattern = data->pattern;
+    size_t len = strlen(input);
+    int index = 0;
+    PathTokenType prev_token_type = TOKEN_LITERAL;
+    while (tokens.start < tokens.end)
+    {
+        PathToken *token = &data->tokens[tokens.start++];
+        switch (token->type)
+        {
+        case TOKEN_LITERAL:
+        {
+            const char *at = &pattern[token->str.pos];
+            const char *src = &input[index];
+            if (prev_token_type == TOKEN_WILDCARD)
+            {
+                int match = 0;
+                size_t t = 0;
+                while (index < len)
+                {
+                    char a = input[index++];
+                    if (a == '\0')
+                        break;
+                    char b = pattern[token->str.pos + t];
+
+                    if (a != b)
+                    {
+                        t = 0;
+                        continue;
+                    }
+
+                    ++t;
+
+                    if (t == token->str.length)
+                    {
+                        match = 1;
+                        break;
+                    }
+                }
+
+                if (!match)
+                    return 0;
+            }
+            else
+            {
+                if (strncmp(&input[index], at, token->str.length) != 0)
+                {
+                    return 0;
+                }
+                index += token->str.length;
+            }
+            break;
+        }
+        case TOKEN_WILDCARD:
+        {
+
+            break;
+        }
+        }
+
+        //last_token_type = token->type;
+        prev_token_type = token->type;
+        //++token_index;
+    }
+    
+    // ensure suffixes are matched correctly
+    if ((prev_token_type == TOKEN_LITERAL) && (index < len))
+        return 0;
+
+    return 1;
+}
+
+static void glob_recurse(GlobData *data, StringBuilder *dir, int segment_index, int token_index)
+{
+    int directory_count = 0; /* number of literal path segments traversed, so that they can be popped in order */
+    while (segment_index < data->segment_count)
+    {
+        PathSegment *segment = &data->segments[segment_index];
+        int is_directory = segment_index < (data->segment_count - 1);
+        if (segment->flags & SEGMENT_WILDCARD)
+        {
+            int dir_filter = is_directory || segment->flags & SEGMENT_DIRECTORY;
+            DirEntry *entry;
+            DirIterator *iter = dir_iter_begin(dir->data);
+            if (!iter)
+                break;
+
+            while ((entry = dir_iter_next(iter)) != NULL)
+            {
+                if (dir_filter && !entry->is_dir)
+                    continue;
+
+                const char *name = entry->name;
+                if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
+                    continue;
+                
+                if (glob_match_pattern(data, irange(token_index, segment->token_count), name))
+                {
+                    if (is_directory)
+                    {
+                        if (entry->is_dir)
+                        {
+                            glob_push_segment(dir, name, strlen(name));
+                            glob_recurse(data, dir, segment_index + 1, token_index + segment->token_count);
+                            glob_pop_segment(dir);
+                        }
+                    }
+                    else
+                    {
+                        // match?
+                        //printf("%s\n", name);
+                        glob_push_segment(dir, name, strlen(name));
+                        string_array_push_len(data->list, dir->data, dir->len);
+                        glob_pop_segment(dir);
+                    }
+                }
+            }
+            dir_iter_end(iter);
+            break;
+        }
+        else
+        {
+            PathToken *token = &data->tokens[token_index];
+            if (is_directory)
+            {
+                glob_push_segment(dir, &data->pattern[token->str.pos], token->str.length);
+                ++directory_count;
+            }
+            else
+            {
+                // match?
+                //printf("%.*s\n", (int)token->str.length, &data->pattern[token->str.pos]);
+                glob_push_segment(dir, &data->pattern[token->str.pos], token->str.length);
+                string_array_push_len(data->list, dir->data, dir->len);
+                glob_pop_segment(dir);
+            }
+        }
+
+        //glob_pop_directory(dir);
+        token_index += segment->token_count;
+        ++segment_index;
+    }
+
+    for (int i = 0; i < directory_count; ++i)
+        glob_pop_segment(dir);
+}
+
+static int glob_sources(GlobData *data)
+{
+    char current_dir[OS_PATH_MAX];
+    StringBuilder sb;
+    string_alloc(&sb, OS_PATH_MAX, current_dir);
+
+    if (!is_path_absolute(data->pattern, strlen(data->pattern)))
+    {
+        if (data->segments[0].flags & SEGMENT_WILDCARD)
+            string_append_char(&sb, '.');
+    }
+
+    glob_recurse(data, &sb, 0, 0);
+
+    return 0;
+}
+
+static inline void set_path_token(PathTokenType type, size_t start, size_t length, PathToken *out_token)
+{
+    out_token->type = type;
+    out_token->str.pos = start;
+    out_token->str.length = length;
+}
+
+int add_files(StringArray *list, const char *pattern)
+{
+    size_t len = strlen(pattern);
+    if (!len)
+        return 0;
+
+    PathSegment segments[MAX_PATH_SEGMENTS];
+    memset(segments, 0, sizeof(segments));
+    PathToken *token_buffer = (PathToken *)BK_ALLOC(sizeof(PathToken) * MAX_PATH_TOKENS);
+    int token_count = 0;
+
+    //int starting_index = is_absolute_path(pattern, len);
+    int result = 0;
+    int segment_count = 1;
+    size_t at = 0;
+    int segment_index = 0;
+    while (pattern[at] != '\0')
+    {
+        char c = pattern[at];
+        if (is_path_separator(c))
+        {
+            /* NOTE: this is here for now to account for POSIX path names that start with a '/' separator */
+            /* since we ignore the first '/' */
+            if (segments[segment_index].token_count > 0)
+            {
+                ++segment_count;
+                ++segment_index;
+                BK_ASSERT(segment_count < MAX_PATH_SEGMENTS);
+            }
+
+            ++at;
+            //size_t start = at++;
+            while (is_path_separator(pattern[at]))
+                ++at;
+            //add_token(TOKEN_PATH_SEPARATOR, start, at - start, ++segment);
+        }
+        else if (c == '*')
+        {
+            segments[segment_index].flags |= SEGMENT_WILDCARD;
+            set_path_token(TOKEN_WILDCARD, at++, 1, &token_buffer[token_count++]);
+            ++segments[segment_index].token_count;
+        }
+        else if (is_valid_file_char(c))
+        {
+            size_t start = at;
+            while (is_valid_file_char(pattern[at]))
+                ++at;
+            set_path_token(TOKEN_LITERAL, start, at - start, &token_buffer[token_count++]);
+            ++segments[segment_index].token_count;
+        }
+        else
+        {
+            goto exit_free;
+        }
+    }
+
+    if (!segments[segment_index].token_count)
+    {
+        segments[segment_index].flags |= SEGMENT_DIRECTORY;
+    }
+
+    BK_ASSERT(token_count <= MAX_PATH_TOKENS);
+
+    GlobData data;
+    data.list = list;
+    data.tokens = token_buffer;
+    data.pattern = pattern;
+    data.segments = segments;
+    data.segment_count = segment_count;
+    result = glob_sources(&data);
+exit_free:
+    BK_FREE(token_buffer);
+
     return result;
 }
 
@@ -2609,8 +2594,9 @@ int build_target(const char *name, StringArray *sources, BuildOptions *opt)
         printf("Error creating build directory.\n");
         goto exit_free;
     }
-    // TODO: only use forward slash for path separators
-    const char *sep = get_path_separator();
+
+    /* We are in the process of normalizing all path separators to use forward slash */
+    const char *sep = "/";
     string_append(&buf, sep);
     string_append(&buf, name);
 
