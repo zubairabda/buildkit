@@ -2712,7 +2712,6 @@ int build_target(const char *name, StringArray *sources, BuildOptions *opt)
     info.total_entry_sizes = total_entry_sizes;
     info.targets = &target_files;
     serialize_cache_file(arena, graph, cache_path.data, &info);
-#if 1 
     // TODO: join threads and link
     int relink = 0;
     string_trunc(&buf, 0);
@@ -2747,6 +2746,12 @@ int build_target(const char *name, StringArray *sources, BuildOptions *opt)
     {
         // A file was recompiled
         relink = 1;
+    }
+
+    if (relink)
+    {
+        CommandTokenList out_cmd = tokenize_build_command(arena, opt->output_rule.command);
+        run_build_rule(commands, string_list_join(arena, &target_files, ' '), output_file, &out_cmd);
     }
 
     if (opt->generate_compile_commands)
@@ -2785,16 +2790,10 @@ int build_target(const char *name, StringArray *sources, BuildOptions *opt)
         }
         else
         {
-            printf("Failed to get the current directory.\n");
+            printf("Failed to get the current directory to generate compile commands.\n");
         }
     }
 
-    if (relink)
-    {
-        CommandTokenList out_cmd = tokenize_build_command(arena, opt->output_rule.command);
-        run_build_rule(commands, string_list_join(arena, &target_files, ' '), output_file, &out_cmd);
-    }
-#endif
     result = 1;
 
 exit_free:
