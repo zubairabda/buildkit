@@ -193,8 +193,11 @@ StringArray *string_array_alloc(size_t count, size_t buffer_size);
 /* frees the string_list stored in address 'list' */
 void string_array_free(StringArray *list);
 
+/* appends a null-terminated string to the list */
+int string_array_push(StringArray *list, const char *string);
+
 /* appends a string with a given length to the list */
-int string_array_push(StringArray *list, const char *string, size_t length);
+int string_array_push_len(StringArray *list, const char *string, size_t length);
 
 /* resets a string list to 0 length */
 void string_array_reset(StringArray *list);
@@ -880,7 +883,7 @@ StringArray *string_array_alloc(size_t count, size_t buffer_size)
     return result;
 }
 
-int string_array_push(StringArray *list, const char *string, size_t length)
+int string_array_push_len(StringArray *list, const char *string, size_t length)
 {
     if (list->count >= list->capacity)
         return 0;
@@ -897,6 +900,11 @@ int string_array_push(StringArray *list, const char *string, size_t length)
     list->offset += size;
 
     return 1;
+}
+
+int string_array_push(StringArray *list, const char *string)
+{
+    return string_array_push_len(list, string, strlen(string));
 }
 
 void string_array_reset(StringArray *list)
@@ -1121,7 +1129,7 @@ static void glob_recurse(GlobData *data, char *dir, int segment_index, int token
                         // match?
                         //printf("%s\n", name);
                         glob_push_segment(dir, name, strlen(name));
-                        string_array_push(data->list, dir, strlen(dir));
+                        string_array_push_len(data->list, dir, strlen(dir));
                         glob_pop_segment(dir);
                     }
                 }
@@ -1142,7 +1150,7 @@ static void glob_recurse(GlobData *data, char *dir, int segment_index, int token
                 // match?
                 //printf("%.*s\n", (int)token->str.length, &data->pattern[token->str.pos]);
                 glob_push_segment(dir, &data->pattern[token->str.pos], token->str.length);
-                string_array_push(data->list, dir, strlen(dir));
+                string_array_push_len(data->list, dir, strlen(dir));
                 glob_pop_segment(dir);
             }
         }
@@ -1248,7 +1256,7 @@ int add_files(StringArray *list, const char *pattern)
     {
         // path is literal, copy string directly
         // TODO: should go through each token, to fix/normalize any extra chars
-        if (string_array_push(list, pattern, len))
+        if (string_array_push_len(list, pattern, len))
         {
 #ifdef HOST_WINDOWS
             String str = list->v[list->count - 1];
@@ -2706,7 +2714,7 @@ int build_target(const char *name, StringArray *sources, BuildOptions *opt)
             {
                 if (target_filetimes[i] > output_stat.last_write_time)
                 {
-                    printf("outdated?\n");
+                    // target is outdated
                     relink = 1;
                     break;
                 }
@@ -2714,13 +2722,13 @@ int build_target(const char *name, StringArray *sources, BuildOptions *opt)
         }
         else
         {
-            printf("Can't stat\n");
+            // Can't stat file
             relink = 1;
         }
     }
     else
     {
-        printf("Someone was recompiled\n");
+        // A file was recompiled
         relink = 1;
     }
 
