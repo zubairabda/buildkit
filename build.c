@@ -18,6 +18,7 @@ int main(void)
     opt.output_rule = out_rule;
     //opt.output_dir = "bin";
     opt.dependency_kind = DEPS_KIND_SCAN;
+    opt.generate_compile_commands = 1;
     build_target("test", sources, &opt);
     float elapsed = (float)(clock() - begin) / CLOCKS_PER_SEC;
     printf("Build time: %.2f\n", elapsed);

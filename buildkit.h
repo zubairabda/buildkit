@@ -72,7 +72,8 @@ struct DirEntry
 };
 
 typedef struct String String;
-struct String {
+struct String
+{
     char *data;
     size_t length;
 };
@@ -152,6 +153,7 @@ struct BuildOptions
     StringArray *include_paths;
     DependencyKind dependency_kind;
     const char *output_dir;
+    int generate_compile_commands;
 };
 
 /* returns the host platform that buildkit is running on */
@@ -715,11 +717,11 @@ int os_create_directory(const char *dir)
 #else
     mode_t mode = S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH;
     if (!mkdir(dir, mode))
-	return 1;
+	    return 1;
     else if (errno == EEXIST)
-	return 0;
+	    return 0;
     else
-	return -1;
+	    return -1;
 #endif
 }
 
@@ -2110,8 +2112,7 @@ typedef enum
 {
     COMMAND_TOKEN_STRING,
     COMMAND_TOKEN_INPUT,
-    COMMAND_TOKEN_OUTPUT,
-    COMMAND_TOKEN_TARGET
+    COMMAND_TOKEN_OUTPUT
 } CommandTokenType;
 
 typedef struct CommandToken CommandToken;
@@ -2232,6 +2233,29 @@ CommandTokenList tokenize_build_command(Arena *arena, const char *command)
     return result;
 }
 
+static inline void push_command_string(StringBuilder *sb, CommandTokenList *tokens, String input, String output)
+{
+    CommandToken *current = tokens->head;
+    for (size_t i = 0; i < tokens->count; ++i)
+    {
+        switch (current->type)
+        {
+        case COMMAND_TOKEN_STRING:
+            string_concat(sb, current->string);
+            break;
+        case COMMAND_TOKEN_INPUT:
+            string_concat(sb, input);
+            break;
+        case COMMAND_TOKEN_OUTPUT:
+            string_concat(sb, output);
+            break;
+        default:
+            break;
+        }
+        current = current->next;
+    }
+}
+
 static int run_build_rule(char *command_line, String input, String output, CommandTokenList *cc_list)
 {
     // NOTE: if this was multithreaded, would be running a loop checking the queue until
@@ -2240,26 +2264,7 @@ static int run_build_rule(char *command_line, String input, String output, Comma
     string_alloc(&command, BK_COMMAND_LENGTH, command_line);
     
     string_trunc(&command, 0);
-    CommandToken *current = cc_list->head;
-    for (size_t i = 0; i < cc_list->count; ++i)
-    {
-        switch (current->type)
-        {
-        case COMMAND_TOKEN_STRING:
-            string_concat(&command, current->string);
-            break;
-        case COMMAND_TOKEN_INPUT:
-            string_concat(&command, input);
-            break;
-        case COMMAND_TOKEN_OUTPUT:
-            string_concat(&command, output);
-            break;
-        default:
-            break;
-        }
-        current = current->next;
-    }
-
+    push_command_string(&command, cc_list, input, output);
     puts(command.data);
 
     int err = os_run_cmd(command.data, NULL, NULL);
@@ -2599,14 +2604,21 @@ int build_target(const char *name, StringArray *sources, BuildOptions *opt)
     StringList target_files = {0};
 
     string_append(&buf, "build");
-    os_create_directory(buf.data);
+    if (os_create_directory(buf.data) == -1)
+    {
+        printf("Error creating build directory.\n");
+        goto exit_free;
+    }
     // TODO: only use forward slash for path separators
     const char *sep = get_path_separator();
     string_append(&buf, sep);
     string_append(&buf, name);
 
-    os_create_directory(buf.data);
-    // TODO: error handling?
+    if (os_create_directory(buf.data) == -1)
+    {
+        printf("Error creating target directory.\n");
+        goto exit_free;
+    }
     string_append(&buf, sep);
     // current is 'build/$target/'
 
@@ -2730,6 +2742,41 @@ int build_target(const char *name, StringArray *sources, BuildOptions *opt)
     {
         // A file was recompiled
         relink = 1;
+    }
+
+    if (opt->generate_compile_commands)
+    {
+        OSFileStat stat;
+        const char *commands_file = "compile_commands.json";
+        if (!os_file_stat(commands_file, &stat) || graph->visit_index)
+        {
+            // TODO: arena allocate
+            StringBuilder json;
+            string_alloc(&json, 0, NULL);
+            string_append(&json, "[\n");
+            StringNode *target = target_files.head;
+            for (int i = 0; i < sources->count; ++i)
+            {
+                string_append(&json, "  {\n    \"directory\": \".\",\n");
+                string_append(&json, "    \"command\": ");
+                string_append(&json, "\"");
+                push_command_string(&json, &cc_cmd, sources->v[i], target->str);
+                string_append(&json, "\",\n");
+                string_append(&json, "    \"file\": \"");
+                string_concat(&json, sources->v[i]);
+                string_append(&json, "\"\n  }");
+                if (i < sources->count - 1)
+                    string_append(&json, ",");
+                string_append(&json, "\n");
+                target = target->next;
+            }
+            string_append(&json, "]\n");
+            OSFile json_file;
+            os_open_file("compile_commands.json", &json_file, OS_FILE_ACCESS_WRITE | OS_FILE_CREATE_IF_NOT_EXIST | OS_FILE_TRUNCATE);
+            os_write_file(json_file, json.data, json.len);
+            os_close_file(json_file);
+            string_free(&json);
+        }
     }
 
     if (relink)
