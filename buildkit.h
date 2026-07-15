@@ -638,7 +638,7 @@ int os_open_file(const char *path, OSFile *out_file, int flags)
 	
     int fd = open(path, opt);
     if (fd < 0)
-	    return 0;
+        return 0;
     out_file->handle = (uintptr_t)fd;
     return 1;
 #endif
@@ -691,7 +691,7 @@ TimeStamp os_get_file_write_time(OSFile file)
 #else
     struct stat st;
     if (!fstat((int)file.handle, &st))
-	    return st.st_mtime;
+        return st.st_mtime;
     return 0;
 #endif
 }
@@ -717,11 +717,11 @@ int os_create_directory(const char *dir)
 #else
     mode_t mode = S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH;
     if (!mkdir(dir, mode))
-	    return 1;
+        return 1;
     else if (errno == EEXIST)
-	    return 0;
+        return 0;
     else
-	    return -1;
+        return -1;
 #endif
 }
 
@@ -785,7 +785,7 @@ int os_path_exists(const char *path)
 #else
     struct stat st;
     if (!stat(path, &st))
-	    return 1;
+        return 1;
     return 0;
 #endif
 }
