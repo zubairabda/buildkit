@@ -509,11 +509,11 @@ DirEntry *dir_iter_next(DirIterator *iter)
     struct dirent *entry = readdir(iter->handle);
     if (entry)
     {
-	iter->current.name = entry->d_name;
-	struct stat st;
-	stat(entry->d_name, &st);
-	iter->current.is_dir = (st.st_mode & S_IFDIR) != 0;
-	return &iter->current;
+        iter->current.name = entry->d_name;
+        struct stat st;
+        stat(entry->d_name, &st);
+        iter->current.is_dir = (st.st_mode & S_IFDIR) != 0;
+        return &iter->current;
     }
     return NULL;
 #endif
@@ -575,10 +575,10 @@ int os_file_stat(const char *path, OSFileStat *out_stat)
     struct stat st;
     if (!stat(path, &st))
     {
-	out_stat->file_size = st.st_size;
-	out_stat->last_write_time = st.st_mtime;
-	out_stat->last_access_time = st.st_atime;
-	return 1;
+        out_stat->file_size = st.st_size;
+        out_stat->last_write_time = st.st_mtime;
+        out_stat->last_access_time = st.st_atime;
+        return 1;
     }
     return 0;
 #endif
@@ -638,7 +638,7 @@ int os_open_file(const char *path, OSFile *out_file, int flags)
 	
     int fd = open(path, opt);
     if (fd < 0)
-	return 0;
+	    return 0;
     out_file->handle = (uintptr_t)fd;
     return 1;
 #endif
@@ -691,7 +691,7 @@ TimeStamp os_get_file_write_time(OSFile file)
 #else
     struct stat st;
     if (!fstat((int)file.handle, &st))
-	return st.st_mtime;
+	    return st.st_mtime;
     return 0;
 #endif
 }
@@ -785,7 +785,7 @@ int os_path_exists(const char *path)
 #else
     struct stat st;
     if (!stat(path, &st))
-	return 1;
+	    return 1;
     return 0;
 #endif
 }
@@ -797,8 +797,7 @@ int os_get_thread_count(void)
     GetSystemInfo(&sysinfo);
     return sysinfo.dwNumberOfProcessors;
 #else
-    #warning unimplemented call os_get_thread_count
-    return 0;
+    return sysconf(_SC_NPROCESSORS_ONLN);
 #endif
 }
 
@@ -2262,8 +2261,6 @@ static inline void push_command_string(StringBuilder *sb, CommandTokenList *toke
 
 static int run_build_rule(char *command_line, String input, String output, CommandTokenList *cc_list)
 {
-    // NOTE: if this was multithreaded, would be running a loop checking the queue until
-    // main thread signals completion
     StringBuilder command;
     string_alloc(&command, BK_COMMAND_LENGTH, command_line);
     
@@ -2573,7 +2570,7 @@ int build_target(const char *name, StringArray *sources, BuildOptions *opt)
     StringBuilder buf;
     string_alloc(&buf, OS_PATH_MAX, path_buffer);
 
-    int thread_count = 1;//lesser_int(os_get_thread_count(), sources->count);
+    int thread_count = 1;
 
     Arena *arena = arena_alloc(0x100000);
     if (!arena)
@@ -2692,7 +2689,6 @@ int build_target(const char *name, StringArray *sources, BuildOptions *opt)
         {
             if (!walk_source_file(arena, path, graph, opt->include_paths))
                 goto exit_free;
-            // NOTE: add source file to thread queue - for now, do this single-threaded
             if (!run_build_rule(commands, path, target, &cc_cmd))
                 goto exit_free;
         }
@@ -2712,7 +2708,6 @@ int build_target(const char *name, StringArray *sources, BuildOptions *opt)
     info.total_entry_sizes = total_entry_sizes;
     info.targets = &target_files;
     serialize_cache_file(arena, graph, cache_path.data, &info);
-    // TODO: join threads and link
     int relink = 0;
     string_trunc(&buf, 0);
     if (string_append(&buf, opt->output_dir))
