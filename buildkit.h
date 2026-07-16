@@ -475,7 +475,7 @@ DirIterator *dir_iter_begin(const char *dir)
 #else
     DIR *handle = opendir(dir);
     if (!handle)
-	return NULL;
+        return NULL;
     DirIterator *iter = (DirIterator *)BK_ALLOC(sizeof(DirIterator));
     memset(iter, 0, sizeof(DirIterator));
     iter->handle = handle;
@@ -622,17 +622,18 @@ int os_open_file(const char *path, OSFile *out_file, int flags)
     if (flags & OS_FILE_ACCESS_READ && flags & OS_FILE_ACCESS_WRITE)
         opt |= O_RDWR;
     else if (flags & OS_FILE_ACCESS_READ)
-	opt |= O_RDONLY;
+        opt |= O_RDONLY;
     else if (flags & OS_FILE_ACCESS_WRITE)
-	opt |= O_WRONLY;
+        opt |= O_WRONLY;
 
     if (flags & OS_FILE_CREATE_IF_NOT_EXIST)
-	opt |= O_CREAT;
+        opt |= O_CREAT;
 
     if (flags & OS_FILE_TRUNCATE)
-	opt |= O_TRUNC;
-	
-    int fd = open(path, opt);
+        opt |= O_TRUNC;
+
+    mode_t mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
+    int fd = open(path, opt, mode);
     if (fd < 0)
         return 0;
     out_file->handle = (uintptr_t)fd;
@@ -3000,7 +3001,7 @@ int os_read_file(OSFile file, size_t offset, size_t size, void *buffer)
     size_t bytes_read = pread((int)file.handle, buffer, size, offset);
     if (bytes_read == size)
         return 1;
-	return 0;	
+    return 0;
 #endif
 }
 
