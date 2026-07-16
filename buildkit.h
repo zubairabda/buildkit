@@ -89,11 +89,10 @@ typedef struct StringArray StringArray;
 struct StringArray
 {
     String *v;
-    char *data;
+    size_t front;
+    size_t back;
     size_t size;
-    size_t offset;
     size_t count;
-    size_t capacity;
 };
 
 typedef struct StringNode StringNode;
@@ -177,9 +176,6 @@ int add_files(StringArray *list, const char *pattern);
 /* builds a target given a collection of source files */
 int build_target(const char *name, StringArray *sources, BuildOptions *opt);
 
-/* parses a c/cpp source file to discover header dependencies and returns true if any of those dependencies have been modified after the target */
-int c_file_is_required(const char *dependency_path, const char *target_path, const char **includes, int n_includes);
-
 /* begins a directory iterator */
 DirIterator *dir_iter_begin(const char *dir);
 
@@ -189,20 +185,20 @@ DirEntry *dir_iter_next(DirIterator *iter);
 /* ends a directory iterator */
 void dir_iter_end(DirIterator *iter);
 
-/* allocates an indexable array of null-terminated strings with a maximum string count of 'count' and a backing buffer of 'buffer_size' */
-StringArray *string_array_alloc(size_t count, size_t buffer_size);
+/* allocates an indexable array of null-terminated strings allocated from a pool with size 'pool_size' */
+StringArray *string_array_alloc(size_t pool_size);
 
-/* frees the string_list stored in address 'list' */
-void string_array_free(StringArray *list);
+/* frees the string_list stored in address 'arr' */
+void string_array_free(StringArray *arr);
 
 /* appends a null-terminated string to the list */
-int string_array_push(StringArray *list, const char *string);
+int string_array_push(StringArray *arr, const char *string);
 
 /* appends a string with a given length to the list */
-int string_array_push_len(StringArray *list, const char *string, size_t length);
+int string_array_push_len(StringArray *arr, const char *string, size_t length);
 
 /* resets a string list to 0 length */
-void string_array_reset(StringArray *list);
+void string_array_reset(StringArray *arr);
 
 /* run a command on the host, using 'file_out' as output and 'file_in' as input */
 int os_run_cmd(char *command, OSFile *file_out, OSFile *file_in);
@@ -885,57 +881,55 @@ static inline RangeInt irange(int start, int length)
     return result;
 }
 
-StringArray *string_array_alloc(size_t count, size_t buffer_size)
+void string_array_reset(StringArray *arr)
 {
-    size_t header_size = sizeof(StringArray);
-    size_t list_size = count * sizeof(String);
-    size_t alloc_size = header_size + list_size + buffer_size;
-    char *buffer = (char *)BK_ALLOC(alloc_size);
-    if (!buffer)
-        return NULL;
-    StringArray *result = (StringArray *)buffer;
-    result->v = (String *)buffer + header_size;
-    result->data = buffer + header_size + list_size;
-    result->capacity = count;
-    result->offset = 0;
-    result->count = 0;
-    result->size = buffer_size;
-    return result;
+    arr->back = arr->size;
+    arr->front = sizeof(StringArray);
+    arr->count = 0;
 }
 
-int string_array_push_len(StringArray *list, const char *string, size_t length)
+StringArray *string_array_alloc(size_t pool_size)
 {
-    if (list->count >= list->capacity)
+    if (pool_size < sizeof(StringArray))
+        return NULL;
+    char *buffer = (char *)BK_ALLOC(pool_size);
+    if (buffer)
+    {
+        StringArray *result = (StringArray *)buffer;
+        result->size = pool_size;
+        string_array_reset(result);
+        result->v = (String *)((char *)result + result->front);
+        return result;
+    }
+    return NULL;
+}
+
+int string_array_push_len(StringArray *arr, const char *string, size_t length)
+{
+    size_t front = arr->front + sizeof(String);
+    size_t back = arr->back - length - 1;
+    if (front > back)
         return 0;
-    size_t size = length + 1;
-    if (list->offset + size >= list->size)
-        return 0;
-    
-    String *str = &list->v[list->count++];
-    str->data = list->data + list->offset;
+    String *str = &arr->v[arr->count++];
+    str->data = (char *)arr + back;
     str->length = length;
 
     memcpy(str->data, string, length);
     str->data[length] = '\0';
-    list->offset += size;
+    arr->back = back;
+    arr->front = front;
 
     return 1;
 }
 
-int string_array_push(StringArray *list, const char *string)
+int string_array_push(StringArray *arr, const char *string)
 {
-    return string_array_push_len(list, string, strlen(string));
+    return string_array_push_len(arr, string, strlen(string));
 }
 
-void string_array_reset(StringArray *list)
+void string_array_free(StringArray *arr)
 {
-    list->count = 0;
-    list->offset = 0;
-}
-
-void string_array_free(StringArray *list)
-{
-    BK_FREE(list);
+    BK_FREE(arr);
 }
 
 StringNode *string_push_node(Arena *arena, String str)
@@ -1897,6 +1891,11 @@ static int search_include_file(IncludeSearchArgs *args, String name, StringBuild
         {
             return 1;
         }
+    }
+
+    if (!args->include_paths)
+    {
+        return 0;
     }
 
     for (int i = 0; i < args->include_paths->count; ++i)
