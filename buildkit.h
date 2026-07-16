@@ -2715,7 +2715,7 @@ int build_target(const char *name, StringArray *sources, BuildOptions *opt)
     string_append(&buf, name);
     string_append(&buf, opt->output_rule.output_ext);
     String output_file = string_from_builder(&buf);
-    printf("%s\n", output_file.data);
+
     if (!graph->visit_index)
     {
         OSFileStat output_stat;
