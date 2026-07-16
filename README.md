@@ -13,7 +13,7 @@ Buildkit probably shouldn't be used for a production grade project, and not even
 The basic gist of using Buildkit is as follows:
 1. Define a list of source files that we want to use as **input** for the build process
 2. Configure the build options, which contain some fields needed to build the project such as:
-    1. **Build rules**, which are simple string tuples that state the command ran for each input file, along with the desired file extension of the output file
+    1. **Build rules**, which are simple string tuples that state the command ran for each input file, along with the desired file extension of the output file. Note the use of the special variables **{in}** and **{out}** which are replaced by the **input** and **output** files for each stage (compile, link) respectively.
     2. Any include paths the project uses which are scanned for header include dependencies
     3. The output directory where the final output will be placed
 3. Compile and run the build file, which will build your project files, and you're done
@@ -36,4 +36,8 @@ int main(void)
 }
 ```
 See the included files in this repository for an example application that can be built using Buildkit.
+
+## Cache
+
+Buildkit creates a cache file to speed up the process of scanning source files for header dependencies. Each time you build your project, Buildkit will check to see if the file is already in the cache, if it is (and hasn't been modified), then it checks to see if any of the dependencies have been modified before triggering the build rule.
 
